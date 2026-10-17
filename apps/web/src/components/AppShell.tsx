@@ -1,15 +1,18 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { signOut, useSession } from 'next-auth/react';
-import { CommandPalette } from '@/components/CommandPalette';
+import { CommandPalette, type CommandGroup } from '@/components/CommandPalette';
 import { NotificationModal } from '@/components/dashboard';
 import { OnboardingWizard } from '@/components/onboarding';
 import { WalletAdapter } from '@/lib/adapters/wallet.adapter';
 import { NotificationsAdapter } from '@/lib/adapters/notifications.adapter';
 import { useBatchReader } from '@/lib/hooks/useBatchReader';
+import { useTheme } from '@/hooks/useTheme';
+import { exportPaymentsToCSV, exportPaymentsToJSON } from '@/lib/export-utils';
+import type { WalletDTO } from '@stellar-alerts/shared';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || 'http://localhost:3001';
 
@@ -27,12 +30,53 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
   const router = useRouter();
 
+  const { theme, toggleTheme } = useTheme();
+
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false);
   const [isNotificationModalOpen, setIsNotificationModalOpen] = useState(false);
   const [isOnboardingOpen, setIsOnboardingOpen] = useState(false);
+  const [wallets, setWallets] = useState<WalletDTO[]>([]);
 
   const getHeaders = useSessionHeaders();
   const batchReader = useBatchReader();
+
+  // Populate the wallet search group. We fetch once on mount (and again when
+  // the palette opens) so the command palette shows up-to-date wallets even
+  // if the user added/removed one from the dashboard page.
+  useEffect(() => {
+    if (!session) return;
+    let cancelled = false;
+    batchReader
+      .fetchWalletsCached()
+      .then((list) => {
+        if (!cancelled) setWallets(list);
+      })
+      .catch((err) => {
+        // Non-fatal: wallet search group simply renders empty.
+        console.error('Command palette: failed to load wallets:', err);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [session, batchReader]);
+
+  const handleExportCSV = async () => {
+    try {
+      const data = await batchReader.fetchDashboardBatched();
+      exportPaymentsToCSV(data.allPayments);
+    } catch (err) {
+      console.error('Command palette: CSV export failed:', err);
+    }
+  };
+
+  const handleExportJSON = async () => {
+    try {
+      const data = await batchReader.fetchDashboardBatched();
+      exportPaymentsToJSON(data.allPayments);
+    } catch (err) {
+      console.error('Command palette: JSON export failed:', err);
+    }
+  };
 
   const handleSavePreferences = async (prefs: { telegramChatId?: string; emailEnabled: boolean }) => {
     try {
@@ -186,40 +230,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
       <CommandPalette
         open={isCommandPaletteOpen}
         onOpenChange={setIsCommandPaletteOpen}
-        groups={[
-          {
-            id: 'navigation',
-            label: 'Navigation',
-            items: NAV_ITEMS.map((item) => ({
-              id: `nav-${item.match.slice(1)}`,
-              label: item.label,
-              keywords: [item.label.toLowerCase(), item.match],
-              icon: (
-                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10l5 3 8-6 5 2V6l-5-2-8 6-5-2z" />
-                </svg>
-              ),
-              onSelect: () => router.push(item.href),
-            })),
-          },
-          {
-            id: 'account',
-            label: 'Account',
-            items: [
-              {
-                id: 'sign-out',
-                label: 'Sign out',
-                keywords: ['logout', 'exit', 'session'],
-                icon: (
-                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-                  </svg>
-                ),
-                onSelect: () => void signOut({ callbackUrl: '/' }),
-              },
-            ],
-          },
-        ]}
+        groups={buildCommandGroups({
+          navItems: NAV_ITEMS,
+          wallets,
+          theme,
+          toggleTheme,
+          router,
+          signOut: () => void signOut({ callbackUrl: '/' }),
+          onExportCSV: handleExportCSV,
+          onExportJSON: handleExportJSON,
+        })}
       />
     </div>
   );
@@ -234,4 +254,126 @@ function useSessionHeaders() {
     if (accessToken) headers['Authorization'] = `Bearer ${accessToken}`;
     return headers;
   };
+}
+
+interface BuildCommandGroupsArgs {
+  navItems: typeof NAV_ITEMS;
+  wallets: WalletDTO[];
+  theme: 'dark' | 'light';
+  toggleTheme: () => void;
+  router: ReturnType<typeof useRouter>;
+  signOut: () => void;
+  onExportCSV: () => void;
+  onExportJSON: () => void;
+}
+
+/**
+ * Build the command palette groups outside of the component render so the
+ * returned array is stable per input and easy to unit-test in isolation.
+ *
+ * Groups:
+ *  - Wallets — searchable list of the user's registered wallets; selecting
+ *    one navigates to the dashboard (where per-wallet filtering lives).
+ *  - Navigation — quick links to the main app routes.
+ *  - Export — download all payments as CSV or JSON.
+ *  - Account — theme toggle and sign-out.
+ */
+export function buildCommandGroups({
+  navItems,
+  wallets,
+  theme,
+  toggleTheme,
+  router,
+  signOut,
+  onExportCSV,
+  onExportJSON,
+}: BuildCommandGroupsArgs): CommandGroup[] {
+  return [
+    {
+      id: 'wallets',
+      label: 'Wallets',
+      items: wallets.map((wallet) => ({
+        id: `wallet-${wallet.id}`,
+        label: wallet.label || wallet.publicKey,
+        keywords: [wallet.publicKey, wallet.label ?? ''].filter(Boolean),
+        icon: (
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10l5 3 8-6 5 2V6l-5-2-8 6-5-2z" />
+          </svg>
+        ),
+        onSelect: () => router.push(`/dashboard`),
+      })),
+    },
+    {
+      id: 'navigation',
+      label: 'Navigation',
+      items: navItems.map((item) => ({
+        id: `nav-${item.match.slice(1)}`,
+        label: item.label,
+        keywords: [item.label.toLowerCase(), item.match],
+        icon: (
+          <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 7v10l5 3 8-6 5 2V6l-5-2-8 6-5-2z" />
+          </svg>
+        ),
+        onSelect: () => router.push(item.href),
+      })),
+    },
+    {
+      id: 'export',
+      label: 'Export',
+      items: [
+        {
+          id: 'export-csv',
+          label: 'Export all payments as CSV',
+          keywords: ['csv', 'download', 'excel', 'sheet'],
+          icon: (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+          ),
+          onSelect: () => void onExportCSV(),
+        },
+        {
+          id: 'export-json',
+          label: 'Export all payments as JSON',
+          keywords: ['json', 'download', 'api', 'raw'],
+          icon: (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+          ),
+          onSelect: () => void onExportJSON(),
+        },
+      ],
+    },
+    {
+      id: 'account',
+      label: 'Account',
+      items: [
+        {
+          id: 'toggle-theme',
+          label: theme === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
+          keywords: ['theme', 'dark', 'light', 'mode', 'appearance', 'color'],
+          icon: (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" />
+            </svg>
+          ),
+          onSelect: toggleTheme,
+        },
+        {
+          id: 'sign-out',
+          label: 'Sign out',
+          keywords: ['logout', 'exit', 'session'],
+          icon: (
+            <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
+            </svg>
+          ),
+          onSelect: signOut,
+        },
+      ],
+    },
+  ];
 }

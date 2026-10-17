@@ -20,6 +20,26 @@
   }
 }
 
+/* Light theme overrides — applied when useTheme sets data-theme="light" on <html>.
+   The dark palette remains the default; this block only activates on toggle. */
+:root[data-theme='light'] {
+  --background: #f7f8fc;
+  --foreground: #0f172a;
+  --glass-bg: rgba(255, 255, 255, 0.72);
+  --glass-border: rgba(124, 58, 237, 0.18);
+  --accent: #7c3aed;
+}
+
+:root[data-theme='light'] body {
+  background: radial-gradient(1200px 800px at 10% 10%, rgba(124, 58, 237, 0.08), transparent 8%),
+              radial-gradient(1000px 600px at 90% 90%, rgba(99, 102, 241, 0.06), transparent 10%),
+              var(--background);
+}
+
+:root[data-theme='light'] .glass {
+  box-shadow: 0 8px 30px rgba(15, 23, 42, 0.12);
+}
+
 body {
   background: radial-gradient(1200px 800px at 10% 10%, rgba(124,58,237,0.06), transparent 8%),
               radial-gradient(1000px 600px at 90% 90%, rgba(99,102,241,0.04), transparent 10%),

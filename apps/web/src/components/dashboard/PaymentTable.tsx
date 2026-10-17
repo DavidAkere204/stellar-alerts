@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from 'react';
 import { PaymentDTO, filterPayments, extractAvailableAssets } from '@stellar-alerts/shared';
+import { exportPaymentsToCSV, exportPaymentsToJSON } from '@/lib/export-utils';
 
 interface PaymentTableProps {
   payments: PaymentDTO[];
@@ -27,63 +28,13 @@ export const PaymentTable: React.FC<PaymentTableProps> = ({ payments = [], isLoa
 
   const isFiltered = searchQuery.trim() !== '' || selectedAsset !== 'ALL';
 
-  const exportToCSV = () => {
-    const listToExport = filteredPayments.length > 0 || isFiltered ? filteredPayments : payments;
-    if (!listToExport || listToExport.length === 0) return;
+  const listToExport = useMemo(
+    () => (filteredPayments.length > 0 || isFiltered ? filteredPayments : payments),
+    [filteredPayments, isFiltered, payments],
+  );
 
-    const headers = ['ID', 'Wallet ID', 'Tx Hash', 'From Address', 'Amount', 'Asset', 'Memo', 'Received At'];
-    const rows = listToExport.map((p) => [
-      p.id,
-      p.walletId,
-      p.txHash,
-      p.fromAddress || '',
-      p.amount,
-      p.asset,
-      p.memo || '',
-      new Date(p.receivedAt).toISOString(),
-    ]);
-
-    const csvContent = [
-      headers.join(','),
-      ...rows.map((row) =>
-        row
-          .map((field) => {
-            const stringified = String(field ?? '');
-            if (stringified.includes(',') || stringified.includes('"') || stringified.includes('\n')) {
-              return `"${stringified.replace(/"/g, '""')}"`;
-            }
-            return stringified;
-          })
-          .join(',')
-      ),
-    ].join('\n');
-
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', 'stellar-payments.csv');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
-
-  const exportToJSON = () => {
-    const listToExport = filteredPayments.length > 0 || isFiltered ? filteredPayments : payments;
-    if (!listToExport || listToExport.length === 0) return;
-
-    const jsonContent = JSON.stringify(listToExport, null, 2);
-    const blob = new Blob([jsonContent], { type: 'application/json;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.setAttribute('download', 'stellar-payments.json');
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
-  };
+  const handleExportToCSV = () => exportPaymentsToCSV(listToExport);
+  const handleExportToJSON = () => exportPaymentsToJSON(listToExport);
 
   return (
     <div className="p-6 rounded-2xl bg-slate-900/60 border border-slate-800 backdrop-blur-xl shadow-xl space-y-6">
@@ -105,7 +56,7 @@ export const PaymentTable: React.FC<PaymentTableProps> = ({ payments = [], isLoa
             </div>
           )}
           <button
-            onClick={exportToCSV}
+            onClick={handleExportToCSV}
             disabled={payments.length === 0}
             className="px-3.5 py-1.5 rounded-xl bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/30 text-xs font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-md cursor-pointer"
             title="Download payments as CSV file"
@@ -113,7 +64,7 @@ export const PaymentTable: React.FC<PaymentTableProps> = ({ payments = [], isLoa
             <span>📥</span> Export CSV
           </button>
           <button
-            onClick={exportToJSON}
+            onClick={handleExportToJSON}
             disabled={payments.length === 0}
             className="px-3.5 py-1.5 rounded-xl bg-blue-600/20 hover:bg-blue-600/30 text-blue-300 border border-blue-500/30 text-xs font-semibold transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5 shadow-md cursor-pointer"
             title="Download payments as JSON file"
